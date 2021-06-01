@@ -1,7 +1,8 @@
 // Package gosortedmap implements sorted map with AVL tree
 // api similar to buitin map
 // Get, Set, Delete
-// all operations are logn
+// all operations are O(logn)
+// Len - O(1)
 // Iterator - AsChan, AsSlice
 package gosortedmap
 
@@ -12,7 +13,7 @@ package gosortedmap
 // Comparable interface optionally can be implemented for object used as sorted map key
 type Comparable interface {
 	// CompareTo compares a and b and returns <0 when a < b, =0 when a == b, >0 when a > b
-	CompareTo(interface{}) int
+	CompareTo(Comparable) int
 }
 
 type comparableWrapper struct {
@@ -20,8 +21,8 @@ type comparableWrapper struct {
 	comp  Comparator
 }
 
-func (cw comparableWrapper) CompareTo(another interface{}) int {
-	return cw.comp(cw.value, another)
+func (cw *comparableWrapper) CompareTo(another Comparable) int {
+	return cw.comp(cw.value, unwrapFromComparableWrapper(another))
 }
 
 // use callback instead, because it is handier
@@ -31,20 +32,21 @@ type Comparator func(a, b interface{}) int
 
 // SortedMap data structure
 type SortedMap struct {
-	tree *node
-	comp Comparator
+	tree   *node
+	comp   Comparator
+	length int
 }
 
 // Entry represents Key-Value pair
 type Entry struct {
-	Key   Comparable
+	Key   interface{}
 	Value interface{}
 }
 
 func (sm *SortedMap) makeKeyComparable(key interface{}) Comparable {
 	keycomp := Comparable(nil)
 	if sm.comp != nil {
-		keycomp = comparableWrapper{key, sm.comp}
+		keycomp = &comparableWrapper{key, sm.comp}
 	} else {
 		keycomp = key.(Comparable)
 	}
@@ -60,25 +62,42 @@ func NewSortedMap(comp Comparator) *SortedMap {
 	return sm
 }
 
+// Len returns size of map
+func (sm *SortedMap) Len() int {
+	return sm.length
+}
+
 // Get value by key
 func (sm *SortedMap) Get(key interface{}) (value interface{}, ok bool) {
 	return find(sm.tree, sm.makeKeyComparable(key))
 }
 
 // Set value by key
-func (sm *SortedMap) Set(key interface{}) {
-	find(sm.tree, sm.makeKeyComparable(key))
+func (sm *SortedMap) Set(key interface{}, value interface{}) {
+	keycomp := sm.makeKeyComparable(key)
+	if _, ok := find(sm.tree, keycomp); !ok {
+		sm.length++
+	}
+	sm.tree = insert(sm.tree, keycomp, value)
 }
 
 // Delete value by key
 func (sm *SortedMap) Delete(key interface{}) {
-	sm.tree = remove(sm.tree, sm.makeKeyComparable(key))
+	keycomp := sm.makeKeyComparable(key)
+	if _, ok := find(sm.tree, keycomp); !ok {
+		return
+	}
+	sm.length--
+	sm.tree = remove(sm.tree, keycomp)
 }
 
 // AsChan returns sorted Entries as channel
 func (sm *SortedMap) AsChan() chan Entry {
 	ch := make(chan Entry)
-	go inOrderChan(sm.tree, ch)
+	go func() {
+		inOrderChan(sm.tree, ch)
+		close(ch)
+	}()
 	return ch
 }
 
@@ -166,7 +185,7 @@ func insert(n *node, k Comparable, v interface{}) *node {
 	return balance(n)
 }
 
-func remove(n *node, k interface{}) *node {
+func remove(n *node, k Comparable) *node {
 	if n == nil {
 		return n
 	}
@@ -211,12 +230,19 @@ func merge(n *node, m *node) *node {
 	return balance(r)
 }
 
+func unwrapFromComparableWrapper(v Comparable) interface{} {
+	if u, ok := v.(*comparableWrapper); ok {
+		return u.value
+	}
+	return v
+}
+
 func inOrderSlice(n *node, res []Entry) []Entry {
 	if n == nil {
 		return res
 	}
 	res = inOrderSlice(n.left, res)
-	res = append(res, Entry{n.key, n.value})
+	res = append(res, Entry{unwrapFromComparableWrapper(n.key), n.value})
 	res = inOrderSlice(n.right, res)
 	return res
 }
@@ -224,12 +250,12 @@ func inOrderSlice(n *node, res []Entry) []Entry {
 func inOrderChan(n *node, res chan Entry) {
 	if n != nil {
 		inOrderChan(n.left, res)
-		res <- Entry{n.key, n.value}
+		res <- Entry{unwrapFromComparableWrapper(n.key), n.value}
 		inOrderChan(n.right, res)
 	}
 }
 
-func split(n *node, k interface{}, in bool) (t1 *node, t2 *node) {
+func split(n *node, k Comparable, in bool) (t1 *node, t2 *node) {
 	if n == nil {
 		return nil, nil
 	}
@@ -240,7 +266,7 @@ func split(n *node, k interface{}, in bool) (t1 *node, t2 *node) {
 	} else {
 		t1, t2 = split(n.left, k, in)
 		t2 = merge(t2, n.right)
-		if n.key != k || in {
+		if n.key.CompareTo(k) != 0 || in {
 			t2 = insert(t2, n.key, n.value)
 		}
 	}
